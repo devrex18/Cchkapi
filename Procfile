@@ -1,1 +1,1 @@
-web: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+web: python3.11 -m uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
