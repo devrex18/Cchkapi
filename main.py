@@ -27,7 +27,9 @@ API_KEY = os.environ.get("API_KEY", "kanha-secret-2024")
 app     = FastAPI(docs_url=None, redoc_url=None)
 
 
-# ── startup ───────────────────────────────────────────
+# ─────────────────────────────────────────
+# STARTUP
+# ─────────────────────────────────────────
 
 @app.on_event("startup")
 async def on_startup():
@@ -36,7 +38,9 @@ async def on_startup():
     print("[+] background workers started")
 
 
-# ── global error handler ──────────────────────────────
+# ─────────────────────────────────────────
+# GLOBAL ERROR HANDLER
+# ─────────────────────────────────────────
 
 @app.exception_handler(Exception)
 async def global_error(request: Request, exc: Exception):
@@ -46,14 +50,9 @@ async def global_error(request: Request, exc: Exception):
     )
 
 
-# ── auth ──────────────────────────────────────────────
-
-def auth(key: str):
-    if key != API_KEY:
-        raise HTTPException(status_code=401, detail="INVALID_KEY")
-
-
-# ── core ──────────────────────────────────────────────
+# ─────────────────────────────────────────
+# CORE LOGIC
+# ─────────────────────────────────────────
 
 def check_card(cc, month, year, cvv):
     for attempt in range(3):
@@ -95,9 +94,12 @@ def format_resp(cc, month, year, cvv, result, elapsed):
         bin_data = bin_lookup(cc)
     except Exception:
         bin_data = {
-            "brand": "UNKNOWN", "issuer": "UNKNOWN",
-            "country": "UNKNOWN", "emoji": "🌐",
-            "type": "UNKNOWN", "level": "UNKNOWN",
+            "brand":   "UNKNOWN",
+            "issuer":  "UNKNOWN",
+            "country": "UNKNOWN",
+            "emoji":   "🌐",
+            "type":    "UNKNOWN",
+            "level":   "UNKNOWN",
         }
 
     country = f"{bin_data['emoji']} {bin_data['country']}"
@@ -121,7 +123,9 @@ def format_resp(cc, month, year, cvv, result, elapsed):
     }
 
 
-# ── models ────────────────────────────────────────────
+# ─────────────────────────────────────────
+# MODELS
+# ─────────────────────────────────────────
 
 class CardReq(BaseModel):
     cc:    str
@@ -135,7 +139,9 @@ class BulkReq(BaseModel):
     delay: Optional[float] = 1.2
 
 
-# ── routes ────────────────────────────────────────────
+# ─────────────────────────────────────────
+# GET ROUTES — browser se seedha
+# ─────────────────────────────────────────
 
 @app.get("/")
 def root():
@@ -154,9 +160,98 @@ def root():
     }
 
 
+@app.get("/check")
+def check_get(
+    cc:    str,
+    month: str,
+    year:  str,
+    cvv:   str,
+    key:   str = "",
+):
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_KEY")
+
+    if is_rate_limited(key):
+        raise HTTPException(status_code=429, detail="RATE_LIMIT_EXCEEDED")
+
+    ok, reason = validate_card(cc, month, year, cvv)
+    if not ok:
+        return {
+            "cc":       f"{cc}|{month}|{year}|{cvv}",
+            "Response": reason,
+            "Status":   False,
+            "Time":     "0.00s",
+        }
+
+    if dup_filter.is_duplicate(cc):
+        return {
+            "cc":       f"{cc}|{month}|{year}|{cvv}",
+            "Response": "DUPLICATE_CARD",
+            "Status":   False,
+            "Time":     "0.00s",
+        }
+
+    start   = time.time()
+    res     = check_card(cc, month, year, cvv)
+    elapsed = time.time() - start
+    out     = format_resp(cc, month, year, cvv, res, elapsed)
+    record(out["cc"], res, elapsed)
+    return out
+
+
+@app.get("/shops")
+def shops_get(key: str = ""):
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_KEY")
+    return {"shops": shop_pool.status()}
+
+
+@app.get("/proxies")
+def proxies_get(key: str = ""):
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_KEY")
+    return proxy_mgr.status()
+
+
+@app.get("/stats")
+def stats_get(key: str = ""):
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_KEY")
+    return {
+        "global": get_stats(),
+        "hourly": get_hourly(),
+    }
+
+
+@app.get("/history/live")
+def live_hist_get(key: str = ""):
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_KEY")
+    return {"cards": get_live_history()}
+
+
+@app.get("/history/dead")
+def dead_hist_get(key: str = ""):
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_KEY")
+    return {"cards": get_dead_history()}
+
+
+@app.get("/logs")
+def logs_get(key: str = ""):
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_KEY")
+    return {"logs": get_logs()}
+
+
+# ─────────────────────────────────────────
+# POST ROUTES — bot ke liye
+# ─────────────────────────────────────────
+
 @app.post("/check")
-def check(card: CardReq, x_api_key: str = Header(...)):
-    auth(x_api_key)
+def check_post(card: CardReq, x_api_key: str = Header(...)):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_KEY")
 
     if is_rate_limited(x_api_key):
         raise HTTPException(status_code=429, detail="RATE_LIMIT_EXCEEDED")
@@ -165,7 +260,6 @@ def check(card: CardReq, x_api_key: str = Header(...)):
     if not ok:
         return {
             "cc":       f"{card.cc}|{card.month}|{card.year}|{card.cvv}",
-            "Gateway":  "Shopify Payments",
             "Response": reason,
             "Status":   False,
             "Time":     "0.00s",
@@ -174,7 +268,6 @@ def check(card: CardReq, x_api_key: str = Header(...)):
     if dup_filter.is_duplicate(card.cc):
         return {
             "cc":       f"{card.cc}|{card.month}|{card.year}|{card.cvv}",
-            "Gateway":  "Shopify Payments",
             "Response": "DUPLICATE_CARD",
             "Status":   False,
             "Time":     "0.00s",
@@ -189,8 +282,10 @@ def check(card: CardReq, x_api_key: str = Header(...)):
 
 
 @app.post("/bulk")
-def bulk(req: BulkReq, x_api_key: str = Header(...)):
-    auth(x_api_key)
+def bulk_post(req: BulkReq, x_api_key: str = Header(...)):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_KEY")
+
     results = []
 
     for line in req.cards:
@@ -246,47 +341,9 @@ def bulk(req: BulkReq, x_api_key: str = Header(...)):
     }
 
 
-@app.get("/shops")
-def shops(x_api_key: str = Header(...)):
-    auth(x_api_key)
-    return {"shops": shop_pool.status()}
-
-
-@app.get("/proxies")
-def proxies(x_api_key: str = Header(...)):
-    auth(x_api_key)
-    return proxy_mgr.status()
-
-
-@app.get("/stats")
-def stats(x_api_key: str = Header(...)):
-    auth(x_api_key)
-    return {
-        "global": get_stats(),
-        "hourly": get_hourly(),
-    }
-
-
-@app.get("/history/live")
-def live_hist(x_api_key: str = Header(...)):
-    auth(x_api_key)
-    return {"cards": get_live_history()}
-
-
-@app.get("/history/dead")
-def dead_hist(x_api_key: str = Header(...)):
-    auth(x_api_key)
-    return {"cards": get_dead_history()}
-
-
-@app.get("/logs")
-def logs(x_api_key: str = Header(...)):
-    auth(x_api_key)
-    return {"logs": get_logs()}
-
-
 @app.post("/duplicate/clear")
 def clear_dup(x_api_key: str = Header(...)):
-    auth(x_api_key)
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_KEY")
     dup_filter.clear()
     return {"status": "cleared"}
